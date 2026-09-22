@@ -43,4 +43,24 @@ router.post('/', requireAuth, async (req: AuthenticatedRequest, res: Response) =
   return res.status(201).json({ id: rows[0].id });
 });
 
+// POST /documents/:id/sync
+// Queues a document for immediate push to the user's connected Google Drive
+// or Notion workspace, instead of waiting for the next sync job run.
+router.post('/:id/sync', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  const { id } = req.params;
+  const { provider } = req.body;
+
+  if (provider !== 'google' && provider !== 'notion') {
+    return res.status(400).json({ error: 'provider must be "google" or "notion"' });
+  }
+
+  await query(
+    `INSERT INTO sync_queue (document_id, user_id, provider, status, created_at)
+     VALUES ($1, $2, $3, 'pending', NOW())`,
+    [id, req.userId, provider]
+  );
+
+  return res.status(202).json({ queued: true });
+});
+
 export default router;
