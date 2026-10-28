@@ -22,12 +22,42 @@ export async function runDocumentSync() {
   );
 
   for (const job of pending) {
+    if (!job.user_id || !job.document_id) {
+      console.error(`[sync] Malformed queue entry ${job.id}: missing user_id or document_id`);
+      await query(
+        `UPDATE sync_queue SET status = 'failed', error = 'malformed_entry' WHERE id = $1`,
+        [job.id]
+      );
+      continue;
+    }
+
+    // Verify ownership here, not only when the entry is queued: the queue row's
+    // user_id is untrusted. A mismatched or tampered entry must never read another
+    // user's document or push it to this user's connected provider.
     const doc = await query(
-      `SELECT title, content FROM documents WHERE id = $1`,
+      `SELECT title, content, owner_id FROM documents WHERE id = $1`,
       [job.document_id]
     );
 
-    if (!doc[0]) continue;
+    if (!doc[0]) {
+      console.error(`[sync] Document not found for queue entry ${job.id} (document_id=${job.document_id})`);
+      await query(
+        `UPDATE sync_queue SET status = 'failed', error = 'document_not_found' WHERE id = $1`,
+        [job.id]
+      );
+      continue;
+    }
+
+    if (!doc[0].owner_id || doc[0].owner_id !== job.user_id) {
+      console.warn(
+        `[sync] Authorization failure for queue entry ${job.id}: user_id=${job.user_id} does not own document_id=${job.document_id}`
+      );
+      await query(
+        `UPDATE sync_queue SET status = 'failed', error = 'unauthorized' WHERE id = $1`,
+        [job.id]
+      );
+      continue;
+    }
 
     const token = await getToken(job.user_id, job.provider);
     if (!token) {
